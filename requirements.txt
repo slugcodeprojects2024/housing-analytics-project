@@ -1,0 +1,26 @@
+# Core data
+pandas>=2.2.0
+numpy>=1.26.0
+sqlalchemy>=2.0.0
+
+# Data sources
+fredapi>=0.5.2
+requests>=2.31.0
+
+# Dashboard
+streamlit>=1.32.0
+plotly>=5.20.0
+
+# LLM integration
+anthropic>=0.39.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.6.0
+
+# Dev / notebooks
+jupyter>=1.0.0
+ipykernel>=6.29.0
+
+# Testing
+pytest>=8.0.0
