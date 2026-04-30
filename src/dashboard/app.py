@@ -440,20 +440,115 @@ elif view == "Explore ZIPs":
 
 elif view == "Ask Claude":
     st.title("Ask Claude")
-    st.caption("Natural-language questions answered with SQL against the housing database")
+    st.caption("Ask questions in plain English — Claude writes SQL, queries the database, and explains the results")
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    from src.llm.text_to_sql import ask as ask_claude
 
-    for msg in st.session_state.messages:
+    # Example questions
+    with st.expander("Example questions to try"):
+        examples = [
+            "What are the most expensive ZIP codes in Santa Clara County?",
+            "How have home prices in San Jose changed since 2020?",
+            "Compare median home values in San Jose, Austin, and Denver metros",
+            "What's the current national median home price and how does it compare to last year?",
+            "Which metros have the highest rent-to-home-value ratio?",
+            "Show me the 10 cheapest metros in California",
+            "How did mortgage rates change during 2022-2023?",
+            "What ZIP codes in the Bay Area are under $1 million?",
+        ]
+        for ex in examples:
+            if st.button(ex, key=f"ex_{ex[:30]}"):
+                st.session_state["prefill_question"] = ex
+
+    # Chat history
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # Display previous messages
+    for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            if msg["role"] == "assistant" and "sql" in msg:
+                # Show the SQL in a collapsible block
+                st.markdown(msg["content"])
+                with st.expander("View SQL query"):
+                    st.code(msg["sql"], language="sql")
+                if msg.get("data"):
+                    with st.expander(f"View data ({msg['row_count']} rows)"):
+                        st.dataframe(msg["data"], use_container_width=True, hide_index=True)
+            else:
+                st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Ask a question about the housing market..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # Handle prefilled question from example buttons
+    prefill = st.session_state.pop("prefill_question", None)
+
+    # Chat input
+    prompt = st.chat_input("Ask a question about the housing market...")
+    question = prefill or prompt
+
+    if question:
+        # Show user message
+        st.session_state.chat_history.append({"role": "user", "content": question})
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(question)
+
+        # Query Claude
         with st.chat_message("assistant"):
-            response = "_(Claude integration coming soon — this will convert your question to SQL and query the database.)_"
-            st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            with st.spinner("Thinking..."):
+                result = ask_claude(question)
+
+            if result.error:
+                st.error(result.error)
+                if result.sql:
+                    st.code(result.sql, language="sql")
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": f"Error: {result.error}",
+                })
+            elif result.sql is None:
+                # Claude couldn't generate SQL
+                st.markdown(result.explanation)
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": result.explanation,
+                })
+            else:
+                # Success — show summary, SQL, and data
+                st.markdown(result.summary)
+
+                with st.expander("View SQL query"):
+                    st.code(result.sql, language="sql")
+
+                if result.rows:
+                    import pandas as pd
+                    df = pd.DataFrame(result.rows)
+                    with st.expander(f"View data ({len(result.rows)} rows)"):
+                        st.dataframe(df, use_container_width=True, hide_index=True)
+
+                    # Auto-chart if the results have a date column and a value column
+                    date_cols = [c for c in df.columns if "date" in c.lower()]
+                    value_cols = [c for c in df.columns if df[c].dtype in ("float64", "int64") and c not in ("geography_id",)]
+                    if date_cols and value_cols:
+                        name_cols = [c for c in df.columns if c in ("name", "metro", "city", "zip_code", "geo_code")]
+                        color_col = name_cols[0] if name_cols else None
+                        fig = px.line(
+                            df,
+                            x=date_cols[0],
+                            y=value_cols[0],
+                            color=color_col,
+                            title="Query Results",
+                            labels={date_cols[0]: "", value_cols[0]: value_cols[0].replace("_", " ").title()},
+                        )
+                        fig.update_layout(hovermode="x unified", height=400)
+                        if any(df[value_cols[0]] > 10000):
+                            fig.update_layout(yaxis_tickformat="$,.0f")
+                        st.plotly_chart(fig, use_container_width=True)
+
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": result.summary,
+                    "sql": result.sql,
+                    "data": result.rows[:50] if result.rows else None,
+                    "row_count": len(result.rows) if result.rows else 0,
+                })
+
+        st.rerun()
