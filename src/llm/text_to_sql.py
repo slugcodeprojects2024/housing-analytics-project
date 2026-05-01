@@ -39,6 +39,14 @@ SCHEMA_INFO = {
     "derived_metrics": [
         "geography_id", "metric_date", "metric_name", "value",
     ],
+    "metro_wages": [
+        "area_code", "area_name", "occ_code", "occ_title",
+        "total_employed", "median_wage", "mean_wage",
+        "pct10_wage", "pct25_wage", "pct75_wage", "pct90_wage", "data_year",
+    ],
+    "metro_crosswalk": [
+        "bls_area_code", "bls_area_name", "zillow_metro", "match_quality",
+    ],
 }
 
 VALID_TABLES = set(SCHEMA_INFO.keys())
@@ -72,10 +80,31 @@ macro_indicators — National economic indicators
   obs_date      DATE
   value         REAL        — Rate (%), dollars, or index value
 
-derived_metrics — Pre-computed analytics (may be empty if not yet populated)
+metro_wages — BLS occupational wage data by metro area (May 2024)
+  area_code     TEXT        — BLS MSA code (e.g. '41940')
+  area_name     TEXT        — BLS MSA name (e.g. 'San Jose-Sunnyvale-Santa Clara, CA')
+  occ_code      TEXT        — SOC occupation code (e.g. '15-1252')
+  occ_title     TEXT        — Occupation name (e.g. 'Software Developers')
+  total_employed INTEGER    — Number of workers in this occupation in this metro
+  median_wage   REAL        — Annual median wage
+  mean_wage     REAL        — Annual mean wage
+  pct10_wage    REAL        — 10th percentile annual wage
+  pct25_wage    REAL        — 25th percentile annual wage
+  pct75_wage    REAL        — 75th percentile annual wage
+  pct90_wage    REAL        — 90th percentile annual wage
+  data_year     INTEGER     — Year of data (2024)
+
+metro_crosswalk — Maps BLS metro names to Zillow metro names
+  bls_area_code TEXT        — BLS area code
+  bls_area_name TEXT        — BLS metro name
+  zillow_metro  TEXT        — Matching Zillow metro name (geo_code from geographies)
+  match_quality TEXT        — 'exact', 'fuzzy', or 'unmatched'
+
+derived_metrics — Pre-computed analytics per metro
   geography_id  INTEGER     — FK to geographies
   metric_date   DATE
-  metric_name   TEXT
+  metric_name   TEXT        — e.g. 'ppi_15-1252' (purchasing power index for software devs)
+                            — 'price_to_wage_15-1252', 'payment_pct_15-1252', 'rent_pct_15-1252'
   value         REAL
 
 KEY FACTS:
@@ -87,6 +116,12 @@ KEY FACTS:
 - The 'United States' geography has geo_type = 'national'
 - To get "Bay Area": look for metro names containing 'San Jose' or 'San Francisco'
 - To get Santa Clara County ZIPs: WHERE county = 'Santa Clara County' AND geo_type = 'zip'
+- To join wage data to housing data: use metro_crosswalk to map BLS area_code to Zillow metro geo_code
+- Purchasing power index (PPI): 100 = national average. Higher = more affordable relative to wages. Lower = less affordable.
+- Common occupations in metro_wages include: Software Developers (15-1252), Registered Nurses (29-1141), Elementary School Teachers (25-2021), Lawyers (23-1011), Construction Laborers (47-2061), Truck Drivers (53-3032), Restaurant Cooks (35-2014), Police Officers (33-3051)
+- derived_metrics metric_name format: 'ppi_{occ_code}', 'price_to_wage_{occ_code}', 'payment_pct_{occ_code}', 'rent_pct_{occ_code}'
+- IMPORTANT: When filtering for the latest date for a specific geo_type, always scope the MAX(metric_date) subquery to that same geo_type. Example: WHERE h.metric_date = (SELECT MAX(h2.metric_date) FROM housing_metrics h2 JOIN geographies g2 ON g2.geography_id = h2.geography_id WHERE g2.geo_type = 'metro' AND h2.metric_type = 'zhvi')
+- Metro names in geo_code use the full Census name like 'San Jose-Sunnyvale-Santa Clara, CA'. Use LIKE '%San Jose%' on geo_code to find them.
 
 RESPONSE FORMAT:
 Always respond with a JSON object (no markdown fences) containing:
@@ -110,7 +145,7 @@ SUMMARY_PROMPT = """The user asked: "{question}"
 The SQL query returned the following results:
 {results}
 
-Provide a clear, concise summary of what this data shows. Highlight key findings, notable trends, or surprising values. If the data includes prices, format them as currency (e.g. $1,234,567). Do NOT use any markdown formatting like bold (**), italic (*), or headers (#). Write in plain text only. Keep it to 2-4 sentences unless the data warrants more detail."""
+Provide a clear, concise summary of what this data shows. Highlight key findings, notable trends, or surprising values. If the data includes prices, format them as currency. Keep it to 2-4 sentences unless the data warrants more detail."""
 
 
 @dataclass
@@ -129,7 +164,7 @@ def validate_sql(sql: str) -> str | None:
     sql_upper = sql.strip().upper()
 
     # Must be a SELECT
-    if not sql_upper.startswith("SELECT"):
+    if not (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")):
         return "Only SELECT queries are allowed."
 
     # Block dangerous statements
