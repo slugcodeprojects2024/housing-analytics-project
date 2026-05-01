@@ -120,8 +120,6 @@ KEY FACTS:
 - Purchasing power index (PPI): 100 = national average. Higher = more affordable relative to wages. Lower = less affordable.
 - Common occupations in metro_wages include: Software Developers (15-1252), Registered Nurses (29-1141), Elementary School Teachers (25-2021), Lawyers (23-1011), Construction Laborers (47-2061), Truck Drivers (53-3032), Restaurant Cooks (35-2014), Police Officers (33-3051)
 - derived_metrics metric_name format: 'ppi_{occ_code}', 'price_to_wage_{occ_code}', 'payment_pct_{occ_code}', 'rent_pct_{occ_code}'
-- IMPORTANT: When filtering for the latest date for a specific geo_type, always scope the MAX(metric_date) subquery to that same geo_type. Example: WHERE h.metric_date = (SELECT MAX(h2.metric_date) FROM housing_metrics h2 JOIN geographies g2 ON g2.geography_id = h2.geography_id WHERE g2.geo_type = 'metro' AND h2.metric_type = 'zhvi')
-- Metro names in geo_code use the full Census name like 'San Jose-Sunnyvale-Santa Clara, CA'. Use LIKE '%San Jose%' on geo_code to find them.
 
 RESPONSE FORMAT:
 Always respond with a JSON object (no markdown fences) containing:
@@ -131,7 +129,7 @@ Always respond with a JSON object (no markdown fences) containing:
 }
 
 RULES:
-- Only generate SELECT statements
+- Only generate SELECT statements (WITH ... AS (...) SELECT ... is allowed for CTEs)
 - Always include a LIMIT clause (max 100 rows unless the user asks for all)
 - Use JOINs between geographies and housing_metrics via geography_id
 - For "latest" or "current" data, use ORDER BY metric_date DESC LIMIT 1 or a subquery for MAX(metric_date)
@@ -163,7 +161,7 @@ def validate_sql(sql: str) -> str | None:
     """Validate SQL for safety. Returns error message if invalid, None if OK."""
     sql_upper = sql.strip().upper()
 
-    # Must be a SELECT
+    # Must be read-only: plain SELECT or WITH ... SELECT (CTE)
     if not (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")):
         return "Only SELECT queries are allowed."
 

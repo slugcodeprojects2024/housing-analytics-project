@@ -104,7 +104,7 @@ def load_bls_data() -> int:
     col_map = {}
     for c in df.columns:
         c_lower = c.lower()
-        if c_lower == "area" or ("area" in c_lower and ("code" in c_lower or "fips" in c_lower)):
+        if "area" in c_lower and ("code" in c_lower or "fips" in c_lower):
             col_map["area_code"] = c
         elif "area" in c_lower and ("title" in c_lower or "name" in c_lower):
             col_map["area_name"] = c
@@ -133,7 +133,7 @@ def load_bls_data() -> int:
 
     # Filter to MSA areas only (area_type == 2 means MSA in BLS data)
     if "area_type" in col_map:
-        df = df[df[col_map["area_type"]].astype(str).isin(["2", "4", "M"])]
+        df = df[df[col_map["area_type"]].astype(str).isin(["2", "M"])]
         print(f"    After MSA filter: {len(df):,} rows")
 
     # Filter to target occupations

@@ -44,7 +44,7 @@ st.sidebar.markdown("---")
 
 view = st.sidebar.radio(
     "View",
-    ["Overview", "Trends", "Affordability", "Compare Metros", "Explore ZIPs", "Ask Claude"],
+    ["Overview", "Trends", "Affordability", "Compare Metros", "Explore ZIPs", "Purchasing Power", "Ask Claude"],
     label_visibility="collapsed",
 )
 
@@ -436,6 +436,299 @@ elif view == "Explore ZIPs":
                 st.dataframe(display, use_container_width=True, hide_index=True)
         else:
             st.warning(f"No ZIP-level data found for {selected_county}.")
+
+
+elif view == "Purchasing Power":
+    st.title("Purchasing Power")
+    st.caption("Where does your money go the furthest? Compare real affordability by occupation across U.S. metros.")
+
+    import sqlite3 as _sqlite3
+    import pydeck as pdk
+    from pathlib import Path as _Path
+
+    _db = _Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "housing.db"
+
+    @st.cache_data(ttl=600)
+    def get_occupations():
+        conn = _sqlite3.connect(_db)
+        rows = conn.execute("SELECT DISTINCT occ_code, occ_title FROM metro_wages ORDER BY occ_title").fetchall()
+        conn.close()
+        return {r[1]: r[0] for r in rows}
+
+    @st.cache_data(ttl=600)
+    def get_ppi_map_data(occ_code):
+        conn = _sqlite3.connect(_db)
+        conn.row_factory = _sqlite3.Row
+        rows = conn.execute("""
+            SELECT g.geo_code as metro, g.latitude as lat, g.longitude as lon,
+                   dm.value as ppi, h.value as home_price,
+                   mw.median_wage as wage, mw.occ_title as occupation
+            FROM derived_metrics dm
+            JOIN geographies g ON g.geography_id = dm.geography_id
+            JOIN metro_crosswalk mc ON mc.zillow_metro = g.geo_code
+            JOIN metro_wages mw ON mw.area_code = mc.bls_area_code AND mw.occ_code = ?
+            JOIN housing_metrics h ON h.geography_id = g.geography_id AND h.metric_type = 'zhvi'
+            WHERE dm.metric_name = ? AND g.latitude IS NOT NULL
+            AND h.metric_date = (
+                SELECT MAX(h2.metric_date) FROM housing_metrics h2
+                JOIN geographies g2 ON g2.geography_id = h2.geography_id
+                WHERE g2.geo_type = 'metro' AND h2.metric_type = 'zhvi'
+            )
+        """, (occ_code, f"ppi_{occ_code}")).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    @st.cache_data(ttl=600)
+    def get_remote_worker_data(occ_code, earn_metro, live_metros):
+        conn = _sqlite3.connect(_db)
+        conn.row_factory = _sqlite3.Row
+        # Get the wage from the earning metro
+        wage_row = conn.execute("""
+            SELECT mw.median_wage
+            FROM metro_wages mw
+            JOIN metro_crosswalk mc ON mc.bls_area_code = mw.area_code
+            WHERE mc.zillow_metro = ? AND mw.occ_code = ?
+        """, (earn_metro, occ_code)).fetchone()
+
+        if not wage_row:
+            conn.close()
+            return []
+
+        remote_wage = wage_row["median_wage"]
+
+        # Get housing costs for living metros
+        results = []
+        for metro in live_metros:
+            row = conn.execute("""
+                SELECT g.geo_code as metro, h.value as home_price
+                FROM housing_metrics h
+                JOIN geographies g ON g.geography_id = h.geography_id
+                WHERE g.geo_code = ? AND g.geo_type = 'metro' AND h.metric_type = 'zhvi'
+                ORDER BY h.metric_date DESC LIMIT 1
+            """, (metro,)).fetchone()
+            if row:
+                home_price = row["home_price"]
+                price_to_wage = home_price / remote_wage if remote_wage > 0 else 0
+                results.append({
+                    "metro": metro,
+                    "remote_wage": remote_wage,
+                    "home_price": home_price,
+                    "price_to_wage": price_to_wage,
+                })
+        conn.close()
+        return results
+
+    occupations = get_occupations()
+    occ_names = list(occupations.keys())
+
+    # Default to Software Developers
+    default_idx = next((i for i, n in enumerate(occ_names) if "Software" in n), 0)
+    selected_occ = st.selectbox("Select your occupation", occ_names, index=default_idx)
+    occ_code = occupations[selected_occ]
+
+    # Remote worker toggle
+    remote_mode = st.toggle("I work remotely", value=False)
+
+    if remote_mode:
+        st.subheader("Remote worker comparison")
+        st.caption("See how far your salary goes in different cities")
+
+        all_metros = get_all_metros()
+        default_earn = [m for m in all_metros if "San Jose" in m]
+        earn_metro = st.selectbox(
+            "I earn wages from:",
+            all_metros,
+            index=all_metros.index(default_earn[0]) if default_earn else 0,
+        )
+
+        default_live = [
+            "Austin, TX", "Denver, CO", "Raleigh, NC",
+            "Nashville, TN", "Pittsburgh, PA",
+        ]
+        live_metros = st.multiselect(
+            "Compare living in:",
+            all_metros,
+            default=[m for m in default_live if m in all_metros],
+            max_selections=10,
+        )
+
+        if live_metros:
+            remote_data = get_remote_worker_data(occ_code, earn_metro, live_metros)
+            if remote_data:
+                import pandas as _pd
+                df = _pd.DataFrame(remote_data)
+                df = df.sort_values("price_to_wage")
+
+                fig = px.bar(
+                    df,
+                    x="metro",
+                    y="price_to_wage",
+                    title=f"Home price as multiple of {earn_metro} {selected_occ} wage",
+                    labels={"metro": "", "price_to_wage": "Price-to-wage ratio"},
+                    color="price_to_wage",
+                    color_continuous_scale="RdYlGn_r",
+                )
+                fig.update_layout(
+                    height=450,
+                    xaxis_tickangle=-45,
+                    yaxis_title="Home price / annual wage",
+                )
+                fig.update_coloraxes(showscale=False)
+                st.plotly_chart(fig, use_container_width=True)
+
+                with st.expander("View data"):
+                    display = df.copy()
+                    display["remote_wage"] = display["remote_wage"].apply(lambda x: f"${x:,.0f}")
+                    display["home_price"] = display["home_price"].apply(lambda x: f"${x:,.0f}")
+                    display["price_to_wage"] = display["price_to_wage"].apply(lambda x: f"{x:.1f}x")
+                    display.columns = ["Metro", "Remote Wage", "Home Price", "Price-to-Wage"]
+                    st.dataframe(display, use_container_width=True, hide_index=True)
+            else:
+                st.warning(f"No wage data found for {selected_occ} in {earn_metro}")
+
+    else:
+        # Standard purchasing power map view
+        map_data = get_ppi_map_data(occ_code)
+
+        if map_data:
+            import pandas as _pd
+            df = _pd.DataFrame(map_data)
+
+            # KPI cards
+            col1, col2, col3, col4 = st.columns(4)
+            best = df.loc[df["ppi"].idxmax()]
+            worst = df.loc[df["ppi"].idxmin()]
+            col1.metric("Best metro", best["metro"].split(",")[0], f"PPI {best['ppi']:.0f}")
+            col2.metric("Worst metro", worst["metro"].split(",")[0], f"PPI {worst['ppi']:.0f}")
+            col3.metric("Metros analyzed", len(df))
+            col4.metric("National baseline", "100")
+
+            # Color mapping for pydeck
+            def ppi_to_color(ppi):
+                if ppi < 60:
+                    return [226, 75, 74, 200]       # red
+                elif ppi < 100:
+                    return [239, 159, 39, 200]      # amber
+                elif ppi < 150:
+                    return [151, 196, 89, 200]      # green
+                else:
+                    return [29, 158, 117, 200]      # teal
+
+            df["color"] = df["ppi"].apply(ppi_to_color)
+            df["radius"] = df["ppi"].apply(lambda p: max(5000, min(50000, p * 100)))
+            df["elevation"] = df["home_price"].apply(lambda p: p / 10)
+
+            # Pydeck 3D map
+            layer = pdk.Layer(
+                "ColumnLayer",
+                data=df,
+                get_position=["lon", "lat"],
+                get_elevation="elevation",
+                elevation_scale=1,
+                radius=8000,
+                get_fill_color="color",
+                pickable=True,
+                auto_highlight=True,
+            )
+
+            view_state = pdk.ViewState(
+                latitude=39.5,
+                longitude=-98.0,
+                zoom=3.2,
+                pitch=45,
+                bearing=0,
+            )
+
+            tooltip = {
+                "html": "<b>{metro}</b><br>"
+                        "PPI: {ppi}<br>"
+                        "Wage: ${wage}<br>"
+                        "Home: ${home_price}",
+                "style": {
+                    "backgroundColor": "#1a1a2e",
+                    "color": "white",
+                    "fontSize": "12px",
+                    "padding": "8px",
+                },
+            }
+
+            st.pydeck_chart(pdk.Deck(
+                layers=[layer],
+                initial_view_state=view_state,
+                tooltip=tooltip,
+                map_style="mapbox://styles/mapbox/dark-v10",
+            ))
+
+            # Legend
+            leg1, leg2, leg3, leg4, leg5 = st.columns(5)
+            leg1.markdown("**Legend:**")
+            leg2.markdown(":red[Unaffordable (PPI < 60)]")
+            leg3.markdown(":orange[Stretched (60-100)]")
+            leg4.markdown(":green[Comfortable (100-150)]")
+            leg5.markdown(":green[Excellent (150+)]")
+
+            st.markdown("---")
+
+            # Scatter plot: wage vs home price
+            st.subheader("Wage vs. home price")
+            fig = px.scatter(
+                df,
+                x="wage",
+                y="home_price",
+                color="ppi",
+                color_continuous_scale="RdYlGn",
+                size="ppi",
+                hover_name="metro",
+                title=f"{selected_occ}: wage vs. home price by metro",
+                labels={
+                    "wage": "Median annual wage ($)",
+                    "home_price": "Median home price ($)",
+                    "ppi": "Purchasing power index",
+                },
+            )
+            fig.update_layout(
+                height=500,
+                xaxis_tickformat="$,.0f",
+                yaxis_tickformat="$,.0f",
+            )
+            # Add quadrant lines at national medians
+            median_wage = df["wage"].median()
+            median_price = df["home_price"].median()
+            fig.add_hline(y=median_price, line_dash="dash", line_color="gray", opacity=0.5)
+            fig.add_vline(x=median_wage, line_dash="dash", line_color="gray", opacity=0.5)
+            fig.add_annotation(x=df["wage"].max(), y=df["home_price"].min(),
+                             text="High pay, low cost", showarrow=False,
+                             font=dict(size=11, color="green"), xanchor="right")
+            fig.add_annotation(x=df["wage"].max(), y=df["home_price"].max(),
+                             text="High pay, high cost", showarrow=False,
+                             font=dict(size=11, color="orange"), xanchor="right")
+            fig.add_annotation(x=df["wage"].min(), y=df["home_price"].max(),
+                             text="Low pay, high cost", showarrow=False,
+                             font=dict(size=11, color="red"))
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Top and bottom tables
+            st.markdown("---")
+            tcol1, tcol2 = st.columns(2)
+            with tcol1:
+                st.subheader("Top 10: best purchasing power")
+                top = df.nlargest(10, "ppi")[["metro", "wage", "home_price", "ppi"]].copy()
+                top["wage"] = top["wage"].apply(lambda x: f"${x:,.0f}")
+                top["home_price"] = top["home_price"].apply(lambda x: f"${x:,.0f}")
+                top["ppi"] = top["ppi"].apply(lambda x: f"{x:.0f}")
+                top.columns = ["Metro", "Wage", "Home Price", "PPI"]
+                st.dataframe(top, use_container_width=True, hide_index=True)
+
+            with tcol2:
+                st.subheader("Bottom 10: worst purchasing power")
+                bottom = df.nsmallest(10, "ppi")[["metro", "wage", "home_price", "ppi"]].copy()
+                bottom["wage"] = bottom["wage"].apply(lambda x: f"${x:,.0f}")
+                bottom["home_price"] = bottom["home_price"].apply(lambda x: f"${x:,.0f}")
+                bottom["ppi"] = bottom["ppi"].apply(lambda x: f"{x:.0f}")
+                bottom.columns = ["Metro", "Wage", "Home Price", "PPI"]
+                st.dataframe(bottom, use_container_width=True, hide_index=True)
+        else:
+            st.warning(f"No purchasing power data available for {selected_occ}. Run the derived metrics pipeline.")
 
 
 elif view == "Ask Claude":
