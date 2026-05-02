@@ -442,9 +442,12 @@ elif view == "Purchasing Power":
     st.title("Purchasing Power")
     st.caption("Where does your money go the furthest? Compare real affordability by occupation across U.S. metros.")
 
+    import os
     import sqlite3 as _sqlite3
     import pydeck as pdk
     from pathlib import Path as _Path
+
+    MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
 
     _db = _Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "housing.db"
 
@@ -657,6 +660,7 @@ elif view == "Purchasing Power":
                 initial_view_state=view_state,
                 tooltip=tooltip,
                 map_style="mapbox://styles/mapbox/dark-v10",
+                api_keys={"mapbox": MAPBOX_TOKEN},
             ))
 
             # Legend

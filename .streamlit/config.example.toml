@@ -1,0 +1,3 @@
+# Copy to config.toml and set your public token (pk.ey...), or use MAPBOX_TOKEN in .env with app.py.
+[mapbox]
+token = "your_mapbox_token_here"
