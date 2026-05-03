@@ -3,3 +3,4 @@ __pycache__/
 .env
 .streamlit/config.toml
 data/processed/*.db
+data/processed/*.gz
