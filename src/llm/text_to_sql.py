@@ -22,6 +22,14 @@ import anthropic
 
 from src.config import ANTHROPIC_API_KEY, CLAUDE_MODEL, require
 
+import os
+try:
+    import streamlit as st
+    if not ANTHROPIC_API_KEY:
+        ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
+except:
+    pass
+
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "housing.db"
 
 # Tables and columns Claude is allowed to reference
