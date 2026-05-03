@@ -44,7 +44,8 @@ st.sidebar.markdown("---")
 
 view = st.sidebar.radio(
     "View",
-    ["Overview", "Trends", "Affordability", "Compare Metros", "Explore ZIPs", "Purchasing Power", "Ask Claude"],
+    ["Overview", "Trends", "Affordability", "Compare Metros", "Explore ZIPs",
+     "Purchasing Power", "Forecast", "Rent vs Buy", "Ask Claude"],
     label_visibility="collapsed",
 )
 
@@ -442,12 +443,9 @@ elif view == "Purchasing Power":
     st.title("Purchasing Power")
     st.caption("Where does your money go the furthest? Compare real affordability by occupation across U.S. metros.")
 
-    import os
     import sqlite3 as _sqlite3
     import pydeck as pdk
     from pathlib import Path as _Path
-
-    MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
 
     _db = _Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "housing.db"
 
@@ -660,7 +658,6 @@ elif view == "Purchasing Power":
                 initial_view_state=view_state,
                 tooltip=tooltip,
                 map_style="mapbox://styles/mapbox/dark-v10",
-                api_keys={"mapbox": MAPBOX_TOKEN},
             ))
 
             # Legend
@@ -733,6 +730,362 @@ elif view == "Purchasing Power":
                 st.dataframe(bottom, use_container_width=True, hide_index=True)
         else:
             st.warning(f"No purchasing power data available for {selected_occ}. Run the derived metrics pipeline.")
+
+
+elif view == "Forecast":
+    st.title("Price Forecast")
+    st.caption("6-month home price predictions using Facebook Prophet")
+
+    from src.forecasting.predict import forecast_prices
+
+    forecast_type = st.radio("Geography level", ["Metro", "ZIP Code"], horizontal=True)
+
+    if forecast_type == "Metro":
+        all_metros = get_all_metros()
+        default_metros = [m for m in all_metros if "San Jose" in m]
+        default_idx = all_metros.index(default_metros[0]) if default_metros else 0
+        selected = st.selectbox("Select a metro area", all_metros, index=default_idx)
+        geo_type = "metro"
+    else:
+        selected = st.text_input("Enter a ZIP code", value="95051")
+        geo_type = "zip"
+
+    months = st.slider("Forecast horizon (months)", 3, 12, 6)
+    metric = st.radio("Metric", ["Home value (ZHVI)", "Rent (ZORI)"], horizontal=True)
+    metric_type = "zhvi" if "Home" in metric else "zori"
+
+    if st.button("Generate forecast", type="primary"):
+        with st.spinner("Training model..."):
+            result = forecast_prices(selected, metric_type=metric_type, months=months, geo_type=geo_type)
+
+        if result["metadata"].get("error"):
+            st.error(result["metadata"]["error"])
+        elif not result["forecast"].empty:
+            meta = result["metadata"]
+
+            # KPI cards
+            col1, col2, col3 = st.columns(3)
+            col1.metric(
+                "Current value",
+                f"${meta['last_actual_value']:,.0f}",
+            )
+            col2.metric(
+                f"{months}-month forecast",
+                f"${meta['forecast_end_value']:,.0f}",
+                f"{meta['forecast_change_pct']:+.1f}%",
+            )
+            col3.metric("Data points used", f"{meta['data_points']} months")
+
+            # Build combined chart
+            hist = result["historical"].copy()
+            fitted = result["fitted"].copy()
+            fc = result["forecast"].copy()
+
+            fig = go.Figure()
+
+            # Historical actual values
+            fig.add_trace(go.Scatter(
+                x=hist["date"], y=hist["actual"],
+                mode="lines", name="Actual",
+                line=dict(color="#2196F3", width=2),
+            ))
+
+            # Forecast line
+            # Connect forecast to last actual point
+            bridge_date = hist["date"].iloc[-1]
+            bridge_val = hist["actual"].iloc[-1]
+            fc_with_bridge = pd.concat([
+                pd.DataFrame({"date": [bridge_date], "predicted": [bridge_val],
+                              "lower": [bridge_val], "upper": [bridge_val]}),
+                fc
+            ])
+
+            fig.add_trace(go.Scatter(
+                x=fc_with_bridge["date"], y=fc_with_bridge["predicted"],
+                mode="lines", name="Forecast",
+                line=dict(color="#FF9800", width=2, dash="dash"),
+            ))
+
+            # Confidence interval
+            fig.add_trace(go.Scatter(
+                x=pd.concat([fc_with_bridge["date"], fc_with_bridge["date"][::-1]]),
+                y=pd.concat([fc_with_bridge["upper"], fc_with_bridge["lower"][::-1]]),
+                fill="toself",
+                fillcolor="rgba(255,152,0,0.15)",
+                line=dict(color="rgba(255,152,0,0)"),
+                name="Confidence interval",
+                showlegend=True,
+            ))
+
+            # Vertical line at forecast start
+            fig.add_vline(
+                x=bridge_date, line_dash="dot",
+                line_color="gray", opacity=0.5,
+                annotation_text="Forecast start",
+            )
+
+            metric_label = "Home Value" if metric_type == "zhvi" else "Rent"
+            fig.update_layout(
+                title=f"{metric_label} Forecast: {selected}",
+                xaxis_title="",
+                yaxis_title=f"{metric_label} ($)",
+                yaxis_tickformat="$,.0f",
+                hovermode="x unified",
+                height=500,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+
+            # Only show last 5 years + forecast for readability
+            import datetime
+            five_years_ago = bridge_date - pd.DateOffset(years=5)
+            fig.update_xaxes(range=[five_years_ago, fc["date"].max()])
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.caption(
+                "Forecast generated using Facebook Prophet with multiplicative seasonality. "
+                "The shaded area shows the 80% confidence interval. "
+                "This is a statistical projection based on historical trends and should not be used as investment advice."
+            )
+
+
+elif view == "Rent vs Buy":
+    st.title("Rent vs Buy Calculator")
+    st.caption("Should you rent or buy? Compare the financial outcomes based on local data.")
+
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _Path
+
+    _db = _Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "housing.db"
+
+    @st.cache_data(ttl=600)
+    def get_local_data(metro_name):
+        conn = _sqlite3.connect(_db)
+        conn.row_factory = _sqlite3.Row
+
+        # Latest home price
+        price = conn.execute("""
+            SELECT h.value FROM housing_metrics h
+            JOIN geographies g ON g.geography_id = h.geography_id
+            WHERE g.geo_code = ? AND g.geo_type = 'metro' AND h.metric_type = 'zhvi'
+            ORDER BY h.metric_date DESC LIMIT 1
+        """, (metro_name,)).fetchone()
+
+        # Latest rent
+        rent = conn.execute("""
+            SELECT h.value FROM housing_metrics h
+            JOIN geographies g ON g.geography_id = h.geography_id
+            WHERE g.geo_code = ? AND g.geo_type = 'metro' AND h.metric_type = 'zori'
+            ORDER BY h.metric_date DESC LIMIT 1
+        """, (metro_name,)).fetchone()
+
+        # Latest mortgage rate
+        rate = conn.execute("""
+            SELECT value FROM macro_indicators
+            WHERE indicator = 'mortgage_30y'
+            ORDER BY obs_date DESC LIMIT 1
+        """).fetchone()
+
+        # Historical appreciation (5yr CAGR)
+        prices_5y = conn.execute("""
+            SELECT h.value, h.metric_date FROM housing_metrics h
+            JOIN geographies g ON g.geography_id = h.geography_id
+            WHERE g.geo_code = ? AND g.geo_type = 'metro' AND h.metric_type = 'zhvi'
+            ORDER BY h.metric_date DESC LIMIT 61
+        """, (metro_name,)).fetchall()
+
+        conn.close()
+
+        appreciation = None
+        if len(prices_5y) >= 60:
+            latest = prices_5y[0]["value"]
+            five_yrs_ago = prices_5y[-1]["value"]
+            if five_yrs_ago > 0:
+                appreciation = ((latest / five_yrs_ago) ** (1/5) - 1) * 100
+
+        return {
+            "home_price": price["value"] if price else None,
+            "monthly_rent": rent["value"] if rent else None,
+            "mortgage_rate": rate["value"] if rate else 6.5,
+            "appreciation_rate": appreciation if appreciation else 3.0,
+        }
+
+    all_metros = get_all_metros()
+    default_metros = [m for m in all_metros if "San Jose" in m]
+    default_idx = all_metros.index(default_metros[0]) if default_metros else 0
+
+    selected_metro = st.selectbox("Select a metro area", all_metros, index=default_idx, key="rvb_metro")
+    local = get_local_data(selected_metro)
+
+    st.markdown("---")
+    st.subheader("Adjust assumptions")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Buying**")
+        home_price = st.number_input("Home price ($)", value=int(local["home_price"] or 500000), step=25000, format="%d")
+        down_payment_pct = st.slider("Down payment (%)", 0, 50, 20)
+        mortgage_rate = st.number_input("Mortgage rate (%)", value=local["mortgage_rate"], step=0.125, format="%.3f")
+        property_tax_rate = st.number_input("Property tax rate (%)", value=1.1, step=0.1, format="%.1f")
+        home_insurance = st.number_input("Home insurance ($/mo)", value=200, step=25)
+        maintenance_pct = st.number_input("Maintenance (% of home value/yr)", value=1.0, step=0.25, format="%.2f")
+        appreciation = st.number_input("Expected appreciation (%/yr)", value=local["appreciation_rate"], step=0.5, format="%.1f")
+
+    with col2:
+        st.markdown("**Renting**")
+        monthly_rent = st.number_input("Monthly rent ($)", value=int(local["monthly_rent"] or 2500), step=100, format="%d")
+        rent_increase = st.number_input("Annual rent increase (%)", value=3.0, step=0.5, format="%.1f")
+        renters_insurance = st.number_input("Renters insurance ($/mo)", value=30, step=5)
+
+        st.markdown("**Investment**")
+        investment_return = st.number_input("Investment return (%/yr)", value=7.0, step=0.5, format="%.1f",
+                                           help="Return on money invested instead of buying")
+
+    time_horizon = st.slider("Time horizon (years)", 1, 30, 7)
+
+    # Compute buying costs
+    down_payment = home_price * down_payment_pct / 100
+    loan_amount = home_price - down_payment
+    monthly_rate = (mortgage_rate / 100) / 12
+    n_payments = 360
+
+    if monthly_rate > 0:
+        monthly_mortgage = loan_amount * (monthly_rate * (1 + monthly_rate)**n_payments) / ((1 + monthly_rate)**n_payments - 1)
+    else:
+        monthly_mortgage = loan_amount / n_payments
+
+    monthly_property_tax = home_price * property_tax_rate / 100 / 12
+    monthly_maintenance = home_price * maintenance_pct / 100 / 12
+
+    # Year-by-year comparison
+    buy_total = down_payment
+    rent_total = 0.0
+    investment_balance = down_payment  # renter invests the down payment
+    current_rent = monthly_rent
+    current_home_value = home_price
+    remaining_loan = loan_amount
+
+    yearly_data = []
+
+    for year in range(1, time_horizon + 1):
+        # Buying costs this year
+        yearly_mortgage = monthly_mortgage * 12
+        yearly_tax = monthly_property_tax * 12
+        yearly_insurance_buy = home_insurance * 12
+        yearly_maintenance_cost = current_home_value * maintenance_pct / 100
+        buy_yearly_cost = yearly_mortgage + yearly_tax + yearly_insurance_buy + yearly_maintenance_cost
+        buy_total += buy_yearly_cost
+
+        # Home equity
+        current_home_value *= (1 + appreciation / 100)
+
+        # Rough principal paydown (simplified)
+        interest_this_year = remaining_loan * mortgage_rate / 100
+        principal_this_year = yearly_mortgage - interest_this_year
+        remaining_loan = max(0, remaining_loan - principal_this_year)
+        equity = current_home_value - remaining_loan
+
+        # Renting costs this year
+        yearly_rent = current_rent * 12
+        yearly_insurance_rent = renters_insurance * 12
+        rent_yearly_cost = yearly_rent + yearly_insurance_rent
+        rent_total += rent_yearly_cost
+
+        # Renter invests the difference
+        monthly_savings = (buy_yearly_cost - rent_yearly_cost) / 12
+        if monthly_savings > 0:
+            investment_balance = investment_balance * (1 + investment_return / 100) + monthly_savings * 12
+        else:
+            investment_balance = investment_balance * (1 + investment_return / 100)
+
+        current_rent *= (1 + rent_increase / 100)
+
+        # Net worth comparison
+        buy_net = equity
+        rent_net = investment_balance
+
+        yearly_data.append({
+            "year": year,
+            "buy_monthly_cost": buy_yearly_cost / 12,
+            "rent_monthly_cost": rent_yearly_cost / 12,
+            "home_equity": equity,
+            "investment_balance": investment_balance,
+            "buy_net_worth": buy_net,
+            "rent_net_worth": rent_net,
+            "buy_advantage": buy_net - rent_net,
+        })
+
+    import pandas as _pd
+    results = _pd.DataFrame(yearly_data)
+
+    # Summary
+    st.markdown("---")
+    final = results.iloc[-1]
+    verdict = "Buy" if final["buy_advantage"] > 0 else "Rent"
+    advantage = abs(final["buy_advantage"])
+
+    if verdict == "Buy":
+        st.success(f"**Buying is better by ${advantage:,.0f}** after {time_horizon} years in {selected_metro}")
+    else:
+        st.info(f"**Renting is better by ${advantage:,.0f}** after {time_horizon} years in {selected_metro}")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Monthly mortgage payment", f"${monthly_mortgage:,.0f}")
+    col2.metric("Monthly rent (current)", f"${monthly_rent:,.0f}")
+    col3.metric(f"Home equity (yr {time_horizon})", f"${final['home_equity']:,.0f}")
+    col4.metric(f"Investment balance (yr {time_horizon})", f"${final['investment_balance']:,.0f}")
+
+    # Net worth comparison chart
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=results["year"], y=results["buy_net_worth"],
+        mode="lines+markers", name="Buy (home equity)",
+        line=dict(color="#2196F3", width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=results["year"], y=results["rent_net_worth"],
+        mode="lines+markers", name="Rent (investments)",
+        line=dict(color="#FF9800", width=2),
+    ))
+    fig.update_layout(
+        title="Net worth comparison: buy vs rent",
+        xaxis_title="Year",
+        yaxis_title="Net worth ($)",
+        yaxis_tickformat="$,.0f",
+        hovermode="x unified",
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Monthly cost comparison
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
+        x=results["year"], y=results["buy_monthly_cost"],
+        mode="lines+markers", name="Buy (total monthly cost)",
+        line=dict(color="#2196F3", width=2),
+    ))
+    fig2.add_trace(go.Scatter(
+        x=results["year"], y=results["rent_monthly_cost"],
+        mode="lines+markers", name="Rent (total monthly cost)",
+        line=dict(color="#FF9800", width=2),
+    ))
+    fig2.update_layout(
+        title="Monthly cost comparison over time",
+        xaxis_title="Year",
+        yaxis_title="Monthly cost ($)",
+        yaxis_tickformat="$,.0f",
+        hovermode="x unified",
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+    st.caption(
+        "This calculator uses simplified assumptions. Actual costs vary based on tax deductions, "
+        "HOA fees, closing costs, opportunity costs, and market conditions. "
+        "Not financial advice."
+    )
 
 
 elif view == "Ask Claude":
