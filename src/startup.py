@@ -11,6 +11,8 @@ from pathlib import Path
 
 import requests
 
+from src.db.connection import ensure_sqlite_geographies_columns
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "processed" / "housing.db"
 DB_URL = "https://github.com/slugcodeprojects2024/housing-analytics-project/releases/download/v1.0-data/housing.db.gz"
 
@@ -20,6 +22,7 @@ def ensure_database():
     if DB_PATH.exists():
         # Quick sanity check — file should be > 100MB
         if DB_PATH.stat().st_size > 100_000_000:
+            ensure_sqlite_geographies_columns()
             return
         else:
             DB_PATH.unlink()
@@ -51,6 +54,7 @@ def ensure_database():
 
     gz_path.unlink()
     print(f"  Database ready: {DB_PATH.stat().st_size // 1_000_000} MB")
+    ensure_sqlite_geographies_columns()
 
 
 if __name__ == "__main__":

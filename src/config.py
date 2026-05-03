@@ -31,7 +31,7 @@ try:
 except:
     FRED_API_KEY = os.getenv("FRED_API_KEY")
 
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 
 def require(name: str, value: str | None) -> str:

@@ -11,6 +11,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import pandas as pd
+
 # Add project root to path so imports work when run via streamlit
 import sys
 from pathlib import Path
@@ -660,7 +662,7 @@ elif view == "Purchasing Power":
                 layers=[layer],
                 initial_view_state=view_state,
                 tooltip=tooltip,
-                map_style="mapbox://styles/mapbox/dark-v10",
+                map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
             ))
 
             # Legend
@@ -1172,7 +1174,6 @@ elif view == "Ask Claude":
                     st.code(result.sql, language="sql")
 
                 if result.rows:
-                    import pandas as pd
                     df = pd.DataFrame(result.rows)
                     with st.expander(f"View data ({len(result.rows)} rows)"):
                         st.dataframe(df, use_container_width=True, hide_index=True)

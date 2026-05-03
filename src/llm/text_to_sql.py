@@ -13,24 +13,34 @@ Pipeline:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import anthropic
+from dotenv import load_dotenv
 
-from src.config import ANTHROPIC_API_KEY, CLAUDE_MODEL, require
-
-import os
-try:
-    import streamlit as st
-    if not ANTHROPIC_API_KEY:
-        ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
-except:
-    pass
+from src.config import CLAUDE_MODEL, require
 
 DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "housing.db"
+
+
+def _resolve_anthropic_api_key() -> str | None:
+    """Env first (.env via load_dotenv), then Streamlit secrets when running in Streamlit."""
+    load_dotenv()
+    key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if key:
+        return key
+    try:
+        import streamlit as st
+        sec = st.secrets.get("ANTHROPIC_API_KEY", "")
+        if isinstance(sec, str) and sec.strip():
+            return sec.strip()
+    except Exception:
+        pass
+    return None
 
 # Tables and columns Claude is allowed to reference
 SCHEMA_INFO = {
@@ -116,6 +126,8 @@ derived_metrics — Pre-computed analytics per metro
   value         REAL
 
 KEY FACTS:
+- SQL aliases: use `g` or `geo` ONLY for the `geographies` table when referencing state, county, metro, geo_code, or name. Never use `g` for `housing_metrics` (use `h` or `hm`).
+- West Coast metros: filter with `g.state IN ('CA','OR','WA')` when `state` is populated; if unsure, also allow `g.geo_type = 'metro' AND (g.geo_code LIKE '%, CA' OR g.geo_code LIKE '%, OR' OR g.geo_code LIKE '%, WA')`.
 - ZIP codes are STRINGS, always 5 digits, zero-padded (e.g. '08701' not 8701)
 - geo_type values: 'zip', 'metro', 'national'
 - metric_type values: 'zhvi' (Zillow Home Value Index = median home value), 'zori' (Zillow Observed Rent Index = median rent)
@@ -200,7 +212,7 @@ def execute_query(sql: str) -> tuple[list[dict], list[str]]:
 
 def ask(question: str, conversation_history: list[dict] | None = None) -> QueryResult:
     """Answer a natural-language question about the housing database."""
-    api_key = require("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
+    api_key = require("ANTHROPIC_API_KEY", _resolve_anthropic_api_key())
     client = anthropic.Anthropic(api_key=api_key)
 
     # Build messages — include conversation history for follow-ups

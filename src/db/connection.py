@@ -37,5 +37,31 @@ def init_schema() -> None:
     print(f"Schema initialized at {DB_PATH}")
 
 
+def ensure_sqlite_geographies_columns() -> None:
+    """Add geographies columns missing from older DB builds (e.g. release snapshots)."""
+    if not DB_PATH.exists():
+        return
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='geographies'"
+        ).fetchone():
+            return
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(geographies)").fetchall()}
+        alters: list[tuple[str, str]] = [
+            ("state", "TEXT"),
+            ("county", "TEXT"),
+            ("metro", "TEXT"),
+            ("latitude", "REAL"),
+            ("longitude", "REAL"),
+        ]
+        for name, typ in alters:
+            if name not in cols:
+                conn.execute(f"ALTER TABLE geographies ADD COLUMN {name} {typ}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     init_schema()
