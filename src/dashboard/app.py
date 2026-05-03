@@ -16,6 +16,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+# Download database from GitHub Releases if not present (for cloud deployment)
+from src.startup import ensure_database
+ensure_database()
+
 from src.dashboard.queries import (
     get_national_kpis,
     get_metro_kpis,
