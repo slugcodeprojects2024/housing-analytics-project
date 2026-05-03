@@ -36,14 +36,13 @@ from src.dashboard.queries import (
 
 st.set_page_config(
     page_title="Housing Market Analytics",
-    page_icon="🏠",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ---- Sidebar ---------------------------------------------------------------
 
-st.sidebar.title("🏠 Housing Analytics")
+st.sidebar.title("Housing Analytics")
 st.sidebar.markdown("---")
 
 view = st.sidebar.radio(
