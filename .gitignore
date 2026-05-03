@@ -1,7 +1,4 @@
 data/raw/zillow/Zip_zhvi_*.csv
-data/processed/*.db
-data/raw/zillow/Zip_zhvi_*.csv
-data/processed/*.db
 __pycache__/
 .env
 .streamlit/config.toml
