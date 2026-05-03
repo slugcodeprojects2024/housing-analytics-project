@@ -2,3 +2,4 @@ data/raw/zillow/Zip_zhvi_*.csv
 __pycache__/
 .env
 .streamlit/config.toml
+data/processed/*.db
