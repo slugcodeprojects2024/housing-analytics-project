@@ -19,8 +19,18 @@ PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{PROCESSED_DIR / 'housing.db'}")
 DB_PATH = PROCESSED_DIR / "housing.db"
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-FRED_API_KEY = os.getenv("FRED_API_KEY")
+try:
+    import streamlit as st
+    ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY"))
+except:
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+try:
+    import streamlit as st
+    FRED_API_KEY = st.secrets.get("FRED_API_KEY", os.getenv("FRED_API_KEY"))
+except:
+    FRED_API_KEY = os.getenv("FRED_API_KEY")
+
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
 
 
