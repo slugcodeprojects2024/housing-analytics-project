@@ -163,7 +163,7 @@ SUMMARY_PROMPT = """The user asked: "{question}"
 The SQL query returned the following results:
 {results}
 
-Provide a clear, concise summary of what this data shows. Highlight key findings, notable trends, or surprising values. If the data includes prices, format them as currency. Keep it to 2-4 sentences unless the data warrants more detail."""
+Provide a clear, concise summary of what this data shows. Highlight key findings, notable trends, or surprising values. If the data includes prices, format them as currency (e.g. $1,234,567). Do NOT use any markdown formatting like bold (**), italic (*), headers (#), bullet points, or inline code backticks. Write in plain text only. Use commas and semicolons to separate items instead of lists. Keep it to 2-4 sentences unless the data warrants more detail."""
 
 
 @dataclass
